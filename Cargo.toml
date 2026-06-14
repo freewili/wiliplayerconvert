@@ -12,8 +12,10 @@ name = "fileconvert"
 path = "src/main.rs"
 
 [dependencies]
-# TODO(Task 6): re-enable ffmpeg-next and convert module
-# ffmpeg-next = "7.1"
+# ffmpeg-the-third (v5) supports the installed FFmpeg 8.1; aliased to the
+# `ffmpeg_next` import name so the pipeline code reads against a stable name.
+ffmpeg-next = { package = "ffmpeg-the-third", version = "5.0" }
+# TODO(Task 10): GUI deps
 # eframe = "0.29"
 # egui = "0.29"
 # rfd = "0.15"

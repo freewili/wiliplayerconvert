@@ -162,7 +162,8 @@ pub fn decode_video_frames<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<u8>>, Conv
 
     // The `fps` filter needs monotonic pts in the buffer's declared time_base;
     // carry the decoded frame's best-effort timestamp into pts.
-    for (s, packet) in ictx.packets().filter_map(Result::ok) {
+    for item in ictx.packets() {
+        let (s, packet) = item?; // surface a corrupt read instead of truncating
         if s.index() != stream_index {
             continue;
         }
@@ -245,13 +246,13 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(path: P) -> Result<Option<Vec<i16>>, Con
             .frame(filtered)
             .is_ok()
         {
-            let n = filtered.samples();
-            let data = filtered.plane::<i16>(0);
-            pcm.extend_from_slice(&data[..n]);
+            // plane(0) is exactly nb_samples long for packed mono s16.
+            pcm.extend_from_slice(filtered.plane::<i16>(0));
         }
     }
 
-    for (s, packet) in ictx.packets().filter_map(Result::ok) {
+    for item in ictx.packets() {
+        let (s, packet) = item?; // surface a corrupt read instead of truncating
         if s.index() != stream_index {
             continue;
         }

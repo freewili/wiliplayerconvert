@@ -57,3 +57,28 @@ pub fn decode(data: &[u8], n: usize) -> Vec<i16> {
     }
     out
 }
+
+/// Decoder state (predictor, step_index) after each prefix length in
+/// `byte_offsets` (ascending). Single pass over the nibble stream.
+/// Returns (predictor as i16, step_index as u8) for index entries.
+pub fn scan_states(blob: &[u8], byte_offsets: &[usize]) -> Vec<(i16, u8)> {
+    let (mut predictor, mut step_index) = (0i32, 0i32);
+    let mut states = Vec::with_capacity(byte_offsets.len());
+    let mut wi = 0usize;
+    for pos in 0..=blob.len() {
+        while wi < byte_offsets.len() && byte_offsets[wi] == pos {
+            states.push((predictor as i16, step_index as u8));
+            wi += 1;
+        }
+        if pos == blob.len() { break; }
+        let b = blob[pos];
+        let (p, si) = step(predictor, step_index, b & 0x0F);
+        let (p, si) = step(p, si, b >> 4);
+        predictor = p; step_index = si;
+    }
+    while wi < byte_offsets.len() { // offsets past the end clamp
+        states.push((predictor as i16, step_index as u8));
+        wi += 1;
+    }
+    states
+}

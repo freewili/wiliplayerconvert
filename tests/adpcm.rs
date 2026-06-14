@@ -34,3 +34,21 @@ fn decode_inverts_encode_trajectory() {
     let max_err = pcm.iter().zip(&dec).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(max_err < 8000, "max_err={max_err}");
 }
+
+#[test]
+fn encode_matches_python_golden() {
+    let pcm: Vec<i16> = (0..1000).map(|i| ((i as f64 * 0.2).sin() * 8000.0) as i16).collect();
+    let expected = std::fs::read("tests/fixtures/adpcm_sine.bin").unwrap();
+    assert_eq!(adpcm::encode(&pcm), expected);
+}
+
+#[test]
+fn scan_states_matches_single_pass() {
+    let pcm: Vec<i16> = (0..1000).map(|i| ((i as f64 * 0.2).sin() * 8000.0) as i16).collect();
+    let blob = adpcm::encode(&pcm);
+    // States after 0, 10, and all bytes must equal a fresh decode to that point.
+    let offsets = [0usize, 10, blob.len()];
+    let states = adpcm::scan_states(&blob, &offsets);
+    assert_eq!(states.len(), offsets.len());
+    assert_eq!(states[0], (0, 0)); // initial state
+}

@@ -1,0 +1,23 @@
+[package]
+name = "fileconvert"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fileconvert"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fileconvert"
+path = "src/main.rs"
+
+[dependencies]
+# TODO(Task 6): re-enable ffmpeg-next and convert module
+# ffmpeg-next = "7.1"
+# eframe = "0.29"
+# egui = "0.29"
+# rfd = "0.15"
+
+[profile.release]
+lto = true
+strip = true

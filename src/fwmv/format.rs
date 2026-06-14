@@ -42,9 +42,9 @@ pub struct Header {
 impl Header {
     pub fn pack(&self) -> [u8; HEADER_SIZE] {
         let mut b = [0u8; HEADER_SIZE];
-        let mut o = 0usize;
+        b[0..4].copy_from_slice(MAGIC);
+        let mut o = 4usize; // cursor starts just past the 4-byte magic
         macro_rules! put { ($v:expr) => {{ let s = $v.to_le_bytes(); b[o..o+s.len()].copy_from_slice(&s); o += s.len(); }}; }
-        b[0..4].copy_from_slice(MAGIC); o = 4;
         put!(self.version); put!(self.flags); put!(self.codec);
         put!(self.width); put!(self.height); put!(self.fps_num); put!(self.fps_den);
         put!(self.frame_count); put!(self.index_offset); put!(self.data_offset);

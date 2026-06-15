@@ -38,7 +38,14 @@ Copy-Item "$env:VCPKG_ROOT\buildtrees\pkgconf\x64-windows-rel\pkgconf-7.dll" "$e
 
 ## Build environment (`.cargo/config.toml`)
 
-`.cargo/config.toml` (committed, machine-specific paths) sets:
+Copy the template and edit the paths for your machine:
+
+```bash
+cp .cargo/config.toml.example .cargo/config.toml
+```
+
+`.cargo/config.toml` is **gitignored** (paths are machine-specific); CI sets the
+same values as environment variables instead. It sets:
 
 - `LIBCLANG_PATH` → LLVM `bin` (bindgen).
 - `VCPKG_ROOT` → the vcpkg tree.

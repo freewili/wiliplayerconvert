@@ -1,0 +1,81 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Always-green gate: the .fwmv format core (ADPCM, header/record/index, packer)
+  # has no native dependencies and is verified byte-for-byte against golden
+  # vectors. This runs fast on every OS and pins format correctness regardless of
+  # the FFmpeg toolchain.
+  format-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --test adpcm --test fwmv_format --test fwmv_pack
+
+  # Full self-contained build: statically links FFmpeg into one binary.
+  #
+  # NOTE: provisioning a static FFmpeg differs per OS and this job mirrors the
+  # local recipe in build/README.md. Treat it as a starting scaffold that may
+  # need per-runner tuning (pkgconf availability on Windows, vcpkg triplet/cache,
+  # libclang version). The format-core job above is the guaranteed gate.
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triplet: x64-windows-static-md
+          - os: ubuntu-latest
+            triplet: x64-linux
+          - os: macos-latest
+            triplet: arm64-osx
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # libclang for bindgen (ffmpeg-sys generates bindings at build time).
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+
+      # Static FFmpeg (LGPL). vcpkg is preinstalled on GitHub runners.
+      - name: Build static FFmpeg via vcpkg
+        shell: bash
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install "ffmpeg:${{ matrix.triplet }}" --clean-after-build
+
+      # Point ffmpeg-sys's pkg-config discovery at the vcpkg .pc files and force
+      # static linking so the transitive system libs are emitted.
+      - name: Configure pkg-config / bindgen
+        shell: bash
+        run: |
+          PCDIR="$VCPKG_INSTALLATION_ROOT/installed/${{ matrix.triplet }}/lib/pkgconfig"
+          echo "PKG_CONFIG_PATH=$PCDIR" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALL_STATIC=1" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          # Windows: clang must target MSVC so bindgen uses the SDK headers.
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            echo "BINDGEN_EXTRA_CLANG_ARGS=--target=x86_64-pc-windows-msvc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release
+        run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fileconvert-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            target/release/fileconvert
+            target/release/fileconvert.exe

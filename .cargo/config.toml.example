@@ -1,0 +1,27 @@
+# Copy this to `.cargo/config.toml` and edit the paths for your machine.
+# `.cargo/config.toml` itself is gitignored because these paths are local.
+# See build/README.md for what each setting does and how to obtain the tools.
+#
+# CI sets the equivalent values as environment variables in the workflow instead
+# of using this file (process env overrides cargo config, so CI doesn't need it).
+
+# The repo may live under a synced folder (Dropbox/OneDrive); sync locks files in
+# target/ mid-compile (os error 32). Point the build outside the synced tree.
+# Omit this section if your checkout is not in a synced folder.
+[build]
+target-dir = "C:/Users/<you>/fc-target"
+
+[env]
+# bindgen (ffmpeg-sys) needs libclang.dll — point at your LLVM bin dir.
+LIBCLANG_PATH = "C:\\Program Files\\LLVM\\bin"
+# Your vcpkg tree (where `vcpkg install ffmpeg:<triplet>` put the static libs).
+VCPKG_ROOT = "C:\\Users\\<you>\\vcpkg"
+# Windows only: force clang into MSVC mode so bindgen uses MSVC/SDK headers
+# instead of auto-detecting MinGW headers. Omit on Linux/macOS.
+BINDGEN_EXTRA_CLANG_ARGS = "--target=x86_64-pc-windows-msvc"
+# A standalone pkgconf (NOT the MinGW pkg-config on PATH). See build/README.md.
+PKG_CONFIG = "C:\\Users\\<you>\\vcpkg\\pkgconf.exe"
+# The vcpkg triplet's pkgconfig dir holding libav*.pc.
+PKG_CONFIG_PATH = "C:\\Users\\<you>\\vcpkg\\installed\\x64-windows-static-md\\lib\\pkgconfig"
+# Emit the full transitive static lib set.
+PKG_CONFIG_ALL_STATIC = "1"

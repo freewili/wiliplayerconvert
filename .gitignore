@@ -1,1 +1,4 @@
 /target
+# Machine-specific local build config (paths differ per machine). Copy from
+# .cargo/config.toml.example and edit. CI uses env vars instead.
+/.cargo/config.toml

@@ -165,24 +165,22 @@ pub fn decode_video_frames<P: AsRef<Path>>(
 
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut decoded = Video::empty();
-    let mut filtered = Video::empty();
 
     // Pull all available frames out of the filtergraph sink and JPEG-encode them
-    // with the persistent encoder.
+    // with the persistent encoder. NOTE: av_buffersink_get_frame does NOT unref
+    // the target frame first, so we use a FRESH frame each pull — reusing one
+    // frame leaks the previous frame's buffer on every call.
     fn drain_sink(
         graph: &mut ff::filter::Graph,
-        filtered: &mut Video,
         frames: &mut Vec<Vec<u8>>,
         encoder: &mut ff::encoder::video::Encoder,
     ) -> Result<(), ConvertError> {
-        while graph
-            .get("out")
-            .unwrap()
-            .sink()
-            .frame(filtered)
-            .is_ok()
-        {
-            encode_into(encoder, filtered, frames)?;
+        loop {
+            let mut filtered = Video::empty();
+            if graph.get("out").unwrap().sink().frame(&mut filtered).is_err() {
+                break;
+            }
+            encode_into(encoder, &mut filtered, frames)?;
         }
         Ok(())
     }
@@ -199,7 +197,7 @@ pub fn decode_video_frames<P: AsRef<Path>>(
             let ts = decoded.timestamp();
             decoded.set_pts(ts);
             graph.get("in").unwrap().source().add(&decoded)?;
-            drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
+            drain_sink(&mut graph, &mut frames, &mut encoder)?;
             if expected_frames > 0.0 {
                 on_progress((frames.len() as f32 / expected_frames).min(0.999));
             }
@@ -211,11 +209,11 @@ pub fn decode_video_frames<P: AsRef<Path>>(
         let ts = decoded.timestamp();
         decoded.set_pts(ts);
         graph.get("in").unwrap().source().add(&decoded)?;
-        drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
+        drain_sink(&mut graph, &mut frames, &mut encoder)?;
     }
 
     graph.get("in").unwrap().source().flush()?;
-    drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
+    drain_sink(&mut graph, &mut frames, &mut encoder)?;
 
     // Flush the encoder for any frame it was still holding.
     encoder.send_eof()?;
@@ -281,21 +279,16 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(
 
     let mut pcm: Vec<i16> = Vec::new();
     let mut decoded = Audio::empty();
-    let mut filtered = Audio::empty();
 
-    // Pull all available (s16, mono, packed) frames out of the sink.
-    fn drain_sink(
-        graph: &mut ff::filter::Graph,
-        filtered: &mut Audio,
-        pcm: &mut Vec<i16>,
-    ) {
-        while graph
-            .get("out")
-            .unwrap()
-            .sink()
-            .frame(filtered)
-            .is_ok()
-        {
+    // Pull all available (s16, mono, packed) frames out of the sink. As with the
+    // video sink, use a FRESH frame each pull — av_buffersink_get_frame doesn't
+    // unref the target, so reusing one frame leaks the previous frame each call.
+    fn drain_sink(graph: &mut ff::filter::Graph, pcm: &mut Vec<i16>) {
+        loop {
+            let mut filtered = Audio::empty();
+            if graph.get("out").unwrap().sink().frame(&mut filtered).is_err() {
+                break;
+            }
             // plane(0) is exactly nb_samples long for packed mono s16.
             pcm.extend_from_slice(filtered.plane::<i16>(0));
         }
@@ -309,7 +302,7 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(
         decoder.send_packet(&packet)?;
         while decoder.receive_frame(&mut decoded).is_ok() {
             graph.get("in").unwrap().source().add(&decoded)?;
-            drain_sink(&mut graph, &mut filtered, &mut pcm);
+            drain_sink(&mut graph, &mut pcm);
             if expected_samples > 0.0 {
                 on_progress((pcm.len() as f32 / expected_samples).min(0.999));
             }
@@ -319,11 +312,11 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(
     decoder.send_eof()?;
     while decoder.receive_frame(&mut decoded).is_ok() {
         graph.get("in").unwrap().source().add(&decoded)?;
-        drain_sink(&mut graph, &mut filtered, &mut pcm);
+        drain_sink(&mut graph, &mut pcm);
     }
 
     graph.get("in").unwrap().source().flush()?;
-    drain_sink(&mut graph, &mut filtered, &mut pcm);
+    drain_sink(&mut graph, &mut pcm);
 
     on_progress(1.0);
     Ok(Some(pcm))

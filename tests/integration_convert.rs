@@ -70,6 +70,26 @@ fn convert_file_writes_valid_fwmv() {
 }
 
 #[test]
+fn output_path_reserves_within_batch() {
+    // Two inputs with the same basename, from different folders, must get
+    // distinct output names even before either file is written (the batch
+    // reservation set), so parallel workers can't clobber each other.
+    let dest = std::env::temp_dir().join("fwmv_reserve_test");
+    std::fs::create_dir_all(&dest).unwrap();
+    let _ = std::fs::remove_file(dest.join("clip.fwmv"));
+    let _ = std::fs::remove_file(dest.join("clip_1.fwmv"));
+
+    let mut reserved = std::collections::HashSet::new();
+    let a = convert::output_path(&dest, std::path::Path::new("/x/clip.mp4"), &reserved);
+    reserved.insert(a.clone());
+    let b = convert::output_path(&dest, std::path::Path::new("/y/clip.mkv"), &reserved);
+
+    assert_eq!(a.file_name().unwrap(), "clip.fwmv");
+    assert_eq!(b.file_name().unwrap(), "clip_1.fwmv");
+    assert_ne!(a, b);
+}
+
+#[test]
 fn convert_file_avoids_collisions() {
     let dest = std::env::temp_dir().join("fwmv_test_collide");
     std::fs::create_dir_all(&dest).unwrap();

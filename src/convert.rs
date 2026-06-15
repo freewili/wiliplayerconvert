@@ -279,28 +279,41 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(path: P) -> Result<Option<Vec<i16>>, Con
 // End-to-end: decode -> pack -> write collision-safe .fwmv
 // ---------------------------------------------------------------------------
 
-fn unique_output_path(dest_dir: &Path, stem: &str) -> PathBuf {
+/// Pick the `.fwmv` path for `input` in `dest_dir`, avoiding both existing files
+/// on disk and any path already in `reserved`. The `reserved` set lets a caller
+/// assign collision-safe names for a whole batch up front, so parallel workers
+/// never race two same-named inputs onto the same output file.
+pub fn output_path(
+    dest_dir: &Path,
+    input: &Path,
+    reserved: &std::collections::HashSet<PathBuf>,
+) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let taken = |p: &PathBuf| p.exists() || reserved.contains(p);
     let first = dest_dir.join(format!("{stem}.fwmv"));
-    if !first.exists() {
+    if !taken(&first) {
         return first;
     }
     let mut i = 1;
     loop {
         let p = dest_dir.join(format!("{stem}_{i}.fwmv"));
-        if !p.exists() {
+        if !taken(&p) {
             return p;
         }
         i += 1;
     }
 }
 
-/// Convert one video to a `.fwmv` in `dest_dir`. `progress(frac)` is called with
-/// 0.0..=1.0 as work proceeds. Returns the written path.
-pub fn convert_file<P: AsRef<Path>>(
+/// Decode `input` and write the packed `.fwmv` to the explicit `out_path`.
+/// `progress(frac)` is called with 0.0..=1.0 as work proceeds.
+pub fn convert_to<P: AsRef<Path>>(
     input: P,
-    dest_dir: &Path,
+    out_path: &Path,
     mut progress: impl FnMut(f32),
-) -> Result<PathBuf, ConvertError> {
+) -> Result<(), ConvertError> {
     let input = input.as_ref();
     progress(0.05);
     let frames = decode_video_frames(input)?; // heavy
@@ -316,13 +329,21 @@ pub fn convert_file<P: AsRef<Path>>(
         audio_rate: AUDIO_RATE as u16,
     };
     let bytes = fwmv::pack(&frames, audio.as_deref(), params);
-
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let out = unique_output_path(dest_dir, stem);
-    std::fs::write(&out, &bytes)?;
+    std::fs::write(out_path, &bytes)?;
     progress(1.0);
+    Ok(())
+}
+
+/// Convert one video to a collision-safe `.fwmv` in `dest_dir`. Returns the
+/// written path. (Sequential convenience wrapper over [`output_path`] +
+/// [`convert_to`]; the GUI reserves names for the whole batch itself.)
+pub fn convert_file<P: AsRef<Path>>(
+    input: P,
+    dest_dir: &Path,
+    progress: impl FnMut(f32),
+) -> Result<PathBuf, ConvertError> {
+    let input = input.as_ref();
+    let out = output_path(dest_dir, input, &std::collections::HashSet::new());
+    convert_to(input, &out, progress)?;
     Ok(out)
 }

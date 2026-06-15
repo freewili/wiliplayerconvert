@@ -1,9 +1,24 @@
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
 use fileconvert::convert;
+
+/// Logical CPUs (fallback 4 if unknown).
+fn cpu_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Default simultaneous conversions: a memory-safe fraction of the cores that
+/// avoids oversubscribing FFmpeg's own per-file decode threads.
+fn default_concurrency() -> usize {
+    (cpu_count() / 4).clamp(2, 8)
+}
 
 #[derive(Clone, PartialEq)]
 enum Status {
@@ -30,6 +45,7 @@ pub struct App {
     dest: Option<PathBuf>,
     rx: Option<Receiver<Msg>>,
     running: bool,
+    concurrency: usize,
 }
 
 impl Default for App {
@@ -39,6 +55,7 @@ impl Default for App {
             dest: None,
             rx: None,
             running: false,
+            concurrency: default_concurrency(),
         }
     }
 }
@@ -70,12 +87,20 @@ impl App {
         let Some(dest) = self.dest.clone() else {
             return;
         };
-        let jobs: Vec<(usize, PathBuf)> = self
+        // Reserve collision-safe output paths for the whole batch up front, in
+        // queue order, so parallel workers never race two same-named inputs onto
+        // the same `.fwmv`. Each job carries its pre-assigned (idx, input, out).
+        let mut reserved: HashSet<PathBuf> = HashSet::new();
+        let jobs: Vec<(usize, PathBuf, PathBuf)> = self
             .items
             .iter()
             .enumerate()
             .filter(|(_, i)| !matches!(i.status, Status::Done(_)))
-            .map(|(i, it)| (i, it.path.clone()))
+            .map(|(i, it)| {
+                let out = convert::output_path(&dest, &it.path, &reserved);
+                reserved.insert(out.clone());
+                (i, it.path.clone(), out)
+            })
             .collect();
         if jobs.is_empty() {
             return;
@@ -88,23 +113,43 @@ impl App {
                 it.status = Status::Queued;
             }
         }
+
+        let n_workers = self.concurrency.clamp(1, jobs.len());
+        let queue: Arc<Mutex<VecDeque<(usize, PathBuf, PathBuf)>>> =
+            Arc::new(Mutex::new(jobs.into_iter().collect()));
+
+        // Coordinator: spawn a bounded pool of workers that pull from the shared
+        // queue, then signal Batch once they all finish.
         thread::spawn(move || {
-            for (idx, path) in jobs {
-                let txp = tx.clone();
-                let ctxp = ctx.clone();
-                let r = convert::convert_file(&path, &dest, |f| {
-                    let _ = txp.send(Msg::Progress(idx, f));
-                    ctxp.request_repaint();
-                });
-                match r {
-                    Ok(out) => {
-                        let _ = tx.send(Msg::Done(idx, out));
+            let mut handles = Vec::with_capacity(n_workers);
+            for _ in 0..n_workers {
+                let q = queue.clone();
+                let tx = tx.clone();
+                let ctx = ctx.clone();
+                handles.push(thread::spawn(move || loop {
+                    let job = q.lock().unwrap().pop_front();
+                    let Some((idx, input, out)) = job else {
+                        break;
+                    };
+                    let txp = tx.clone();
+                    let ctxp = ctx.clone();
+                    let r = convert::convert_to(&input, &out, |f| {
+                        let _ = txp.send(Msg::Progress(idx, f));
+                        ctxp.request_repaint();
+                    });
+                    match r {
+                        Ok(()) => {
+                            let _ = tx.send(Msg::Done(idx, out));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Msg::Failed(idx, format!("{e}")));
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Failed(idx, format!("{e}")));
-                    }
-                }
-                ctx.request_repaint();
+                    ctx.request_repaint();
+                }));
+            }
+            for h in handles {
+                let _ = h.join();
             }
             let _ = tx.send(Msg::Batch);
             ctx.request_repaint();
@@ -152,6 +197,18 @@ impl eframe::App for App {
             ui.label(match &self.dest {
                 Some(d) => format!("Destination: {}", d.display()),
                 None => "Destination: (none chosen)".into(),
+            });
+            ui.horizontal(|ui| {
+                ui.label("Simultaneous conversions:");
+                ui.add_enabled(
+                    !self.running,
+                    egui::DragValue::new(&mut self.concurrency).range(1..=cpu_count()),
+                )
+                .on_hover_text(
+                    "How many files convert at once. Higher = faster batches but \
+                     more RAM (each file is fully buffered in memory) and, past a \
+                     point, CPU oversubscription vs FFmpeg's own decode threads.",
+                );
             });
             ui.separator();
             let total = self.items.len();

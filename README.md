@@ -6,6 +6,8 @@ install. The code is cross-platform (Windows/Linux/macOS); so far it has been
 built and validated on **Windows**, with Linux/macOS wired in CI (see
 [`build/README.md`](build/README.md)).
 
+![wiliplayerconvert converting a batch of videos](docs/screenshot.png)
+
 ## What it does
 
 - Pick **multiple video files** at once (native file dialog).

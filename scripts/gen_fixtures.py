@@ -1,5 +1,5 @@
-# Run from C:\~prj\Dropbox\vibeProjects\movieplayer (so `tools` resolves):
-#   python C:\~prj\Dropbox\vibeProjects\fileconvert\scripts\gen_fixtures.py C:\~prj\Dropbox\vibeProjects\fileconvert\tests\fixtures
+# Run from the movieplayer repo (so `tools` resolves):
+#   python <wiliplayerconvert>/scripts/gen_fixtures.py <wiliplayerconvert>/tests/fixtures
 import sys, math, struct, pathlib
 from tools import adpcm, pack_fwmv as P, fwmv_format as F
 

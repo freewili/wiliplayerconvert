@@ -1,4 +1,4 @@
-# Building fileconvert (static FFmpeg link)
+# Building wiliplayerconvert (static FFmpeg link)
 
 The app links FFmpeg **statically** so the shipped binary has no external FFmpeg
 DLL dependency. This document records how the local Windows build environment was
@@ -11,15 +11,17 @@ set up so it can be reproduced (and so CI can mirror it — see Task 11).
 | Rust (MSVC host) | 1.95 | rustup | `x86_64-pc-windows-msvc` |
 | Visual Studio | 18 Professional | — | MSVC toolchain + Windows SDK (linker, headers) |
 | LLVM / libclang | 22.1.7 | `winget install LLVM.LLVM` | bindgen needs `libclang.dll` |
-| vcpkg | 2026-04-08 | `C:\Users\dave\vcpkg` | builds + provides static FFmpeg |
-| FFmpeg (static, LGPL) | 8.1.1 | `vcpkg install ffmpeg:x64-windows-static-md` | the codecs |
+| vcpkg | 2026-04-08 | `C:\Users\<you>\vcpkg` | builds + provides static FFmpeg |
+| FFmpeg (static, LGPL) | 8.1.1 | `vcpkg install ffmpeg[core,dav1d]:x64-windows-static-md` | the codecs (dav1d = AV1) |
 
 ## One-time setup
 
 ```powershell
 # 1) Static FFmpeg (LGPL by default — no -gpl). static-md = static libs, dynamic CRT,
-#    which matches Rust's default MSVC CRT linkage.
-& "$env:VCPKG_ROOT\vcpkg.exe" install ffmpeg:x64-windows-static-md --clean-after-build
+#    which matches Rust's default MSVC CRT linkage. The `dav1d` feature adds the
+#    software AV1 decoder — without it, AV1 inputs decode zero frames because
+#    FFmpeg's native `av1` decoder is hardware-accelerated only.
+& "$env:VCPKG_ROOT\vcpkg.exe" install "ffmpeg[core,dav1d]:x64-windows-static-md" --clean-after-build
 
 # 2) libclang for bindgen
 winget install --id LLVM.LLVM --silent --accept-package-agreements --accept-source-agreements
@@ -78,6 +80,6 @@ cargo test --test adpcm --test fwmv_format --test fwmv_pack
 ## Verifying the static link
 
 ```powershell
-dumpbin /dependents <target-dir>\debug\fileconvert.exe
+dumpbin /dependents <target-dir>\debug\wiliplayerconvert.exe
 ```
 Expect only Windows system DLLs + `VCRUNTIME140.dll` — **no `avcodec`/`avformat`/`avutil`**.

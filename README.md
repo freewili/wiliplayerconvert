@@ -1,8 +1,7 @@
 # FreeWili Player Movie Convertor
 
-(`fileconvert`) A small desktop app that converts ordinary videos (MP4, MKV, MOV, …) into
-`.fwmv` files for the **FreeWili movie player**. It builds as a single
-self-contained binary — FFmpeg is statically linked, so there is nothing else to
+(`wiliplayerconvert`) A small desktop app that converts ordinary videos (MP4, MKV, MOV, …) into
+`.fwmv` files for the **FreeWili movie player**. They run on FreeWili2 (https://www.freewili.com ) or Adafruit FruitJam (www.adafruit.com/product/6200). It builds as a single self-contained binary — FFmpeg is statically linked, so there is nothing else to
 install. The code is cross-platform (Windows/Linux/macOS); so far it has been
 built and validated on **Windows**, with Linux/macOS wired in CI (see
 [`build/README.md`](build/README.md)).
@@ -30,9 +29,10 @@ Copy the `.fwmv` files to a USB thumb drive and plug it into the player:
 
 ## Running
 
-Download the binary for your OS and run it — no installer, no dependencies.
-(Windows may need the Microsoft Visual C++ runtime, which is present on virtually
-all machines.)
+Once a release is published, download the binary for your OS and run it — no
+installer, no dependencies. (Windows may need the Microsoft Visual C++ runtime,
+which is present on virtually all machines.) Until then, build from source (below)
+or grab the artifact from a CI run.
 
 ## Building from source
 
@@ -66,6 +66,9 @@ cargo test --test adpcm --test fwmv_format --test fwmv_pack
 
 ## License
 
-The app statically links an **LGPL** build of FFmpeg (decoders + the built-in
-MJPEG encoder; no GPL components). See `build/README.md` for the FFmpeg build
-configuration.
+The application code is licensed under the **MIT License** (see [`LICENSE`](LICENSE)).
+
+The binary statically links an **LGPL** build of FFmpeg (decoders + the built-in
+MJPEG encoder; no GPL components) and the BSD-licensed **dav1d** AV1 decoder. See
+`build/README.md` for the FFmpeg build configuration. Redistributing the binary is
+subject to FFmpeg's LGPL terms.

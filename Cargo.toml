@@ -1,14 +1,21 @@
 [package]
-name = "fileconvert"
+name = "wiliplayerconvert"
 version = "0.1.0"
 edition = "2021"
+description = "Desktop app that converts ordinary videos into .fwmv files for the FreeWili movie player. FFmpeg is statically linked, so the binary is self-contained."
+authors = ["Dave Robins"]
+license = "MIT"
+repository = "https://github.com/evaderkrub/wiliplayerconvert"
+readme = "README.md"
+keywords = ["video", "converter", "ffmpeg", "freewili", "fwmv"]
+categories = ["multimedia::video", "command-line-utilities"]
 
 [lib]
-name = "fileconvert"
+name = "wiliplayerconvert"
 path = "src/lib.rs"
 
 [[bin]]
-name = "fileconvert"
+name = "wiliplayerconvert"
 path = "src/main.rs"
 
 [dependencies]

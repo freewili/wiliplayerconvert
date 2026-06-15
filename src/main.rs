@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result<()> {
     // Any path arguments pre-populate the queue (supports drag-onto-icon,
-    // "Open with…", and `fileconvert video1.mp4 video2.mkv`).
+    // "Open with…", and `wiliplayerconvert video1.mp4 video2.mkv`).
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 
     let options = eframe::NativeOptions {

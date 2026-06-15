@@ -2,3 +2,5 @@
 # Machine-specific local build config (paths differ per machine). Copy from
 # .cargo/config.toml.example and edit. CI uses env vars instead.
 /.cargo/config.toml
+# Internal AI planning artifacts — not published (the design spec is kept).
+/docs/superpowers/plans/

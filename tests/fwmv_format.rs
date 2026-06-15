@@ -1,4 +1,4 @@
-use fileconvert::fwmv::format::{self, Header, IndexEntry};
+use wiliplayerconvert::fwmv::format::{self, Header, IndexEntry};
 
 #[test]
 fn record_padding_aligns_to_four() {

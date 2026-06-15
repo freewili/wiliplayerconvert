@@ -6,7 +6,7 @@ use std::thread;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use fileconvert::convert;
+use wiliplayerconvert::convert;
 
 /// Logical CPUs (fallback 4 if unknown).
 fn cpu_count() -> usize {

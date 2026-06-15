@@ -12,7 +12,7 @@ fn main() {
     let dest = Path::new(&args[2]);
     std::fs::create_dir_all(dest).expect("create dest dir");
 
-    let res = fileconvert::convert::convert_file(input, dest, |f| {
+    let res = wiliplayerconvert::convert::convert_file(input, dest, |f| {
         eprintln!("progress {:.0}%", f * 100.0);
     });
     match res {

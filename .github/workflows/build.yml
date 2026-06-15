@@ -53,7 +53,9 @@ jobs:
       - name: Build static FFmpeg via vcpkg
         shell: bash
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install "ffmpeg:${{ matrix.triplet }}" --clean-after-build
+          # dav1d provides the software AV1 decoder; without it AV1 inputs decode
+          # zero frames (FFmpeg's native av1 decoder is hwaccel-only).
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install "ffmpeg[core,dav1d]:${{ matrix.triplet }}" --clean-after-build
 
       # Point ffmpeg-sys's pkg-config discovery at the vcpkg .pc files and force
       # static linking so the transitive system libs are emitted.
@@ -74,8 +76,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: fileconvert-${{ matrix.os }}
+          name: wiliplayerconvert-${{ matrix.os }}
           if-no-files-found: error
           path: |
-            target/release/fileconvert
-            target/release/fileconvert.exe
+            target/release/wiliplayerconvert
+            target/release/wiliplayerconvert.exe

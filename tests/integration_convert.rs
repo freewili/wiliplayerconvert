@@ -8,7 +8,7 @@ fn ffmpeg_initializes() {
 
 #[test]
 fn decodes_letterboxed_jpeg_frames() {
-    let frames = convert::decode_video_frames("tests/fixtures/sample.mp4").unwrap();
+    let frames = convert::decode_video_frames("tests/fixtures/sample.mp4", |_| {}).unwrap();
     // 2 s at 15 fps target -> ~30 frames.
     assert!(
         frames.len() >= 25 && frames.len() <= 35,
@@ -24,7 +24,7 @@ fn decodes_letterboxed_jpeg_frames() {
 
 #[test]
 fn decodes_mono_16k_pcm() {
-    let pcm = convert::decode_audio_pcm("tests/fixtures/sample.mp4").unwrap();
+    let pcm = convert::decode_audio_pcm("tests/fixtures/sample.mp4", |_| {}).unwrap();
     // ~2 s of audio at 16 kHz mono.
     let pcm = pcm.expect("sample has audio");
     assert!(
@@ -38,7 +38,7 @@ fn decodes_mono_16k_pcm() {
 fn returns_none_for_no_audio() {
     // sample.mp4 HAS audio, so this is a compile/contract guard on the API shape.
     let _f: fn(&str) -> Result<Option<Vec<i16>>, convert::ConvertError> =
-        |p| convert::decode_audio_pcm(p);
+        |p| convert::decode_audio_pcm(p, |_| {});
 }
 
 #[test]

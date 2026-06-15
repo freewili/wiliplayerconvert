@@ -123,9 +123,19 @@ fn encode_jpeg(frame: &Video) -> Result<Vec<u8>, ff::Error> {
     Ok(out)
 }
 
-pub fn decode_video_frames<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<u8>>, ConvertError> {
+pub fn decode_video_frames<P: AsRef<Path>>(
+    path: P,
+    mut on_progress: impl FnMut(f32),
+) -> Result<Vec<Vec<u8>>, ConvertError> {
     ff::init()?;
     let mut ictx = ff::format::input(path.as_ref())?;
+
+    // Expected output frame count, for progress reporting (0 = duration unknown).
+    let expected_frames = if ictx.duration() > 0 {
+        (ictx.duration() as f64 / 1_000_000.0 * FPS as f64).max(1.0) as f32
+    } else {
+        0.0
+    };
 
     let stream = ictx
         .streams()
@@ -173,6 +183,9 @@ pub fn decode_video_frames<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<u8>>, Conv
             decoded.set_pts(ts);
             graph.get("in").unwrap().source().add(&decoded)?;
             drain_sink(&mut graph, &mut filtered, &mut frames)?;
+            if expected_frames > 0.0 {
+                on_progress((frames.len() as f32 / expected_frames).min(0.999));
+            }
         }
     }
 
@@ -190,6 +203,7 @@ pub fn decode_video_frames<P: AsRef<Path>>(path: P) -> Result<Vec<Vec<u8>>, Conv
     if frames.is_empty() {
         return Err(ConvertError::Empty);
     }
+    on_progress(1.0);
     Ok(frames)
 }
 
@@ -215,9 +229,19 @@ fn audio_filter(decoder: &ff::decoder::Audio) -> Result<ff::filter::Graph, ff::E
     Ok(g)
 }
 
-pub fn decode_audio_pcm<P: AsRef<Path>>(path: P) -> Result<Option<Vec<i16>>, ConvertError> {
+pub fn decode_audio_pcm<P: AsRef<Path>>(
+    path: P,
+    mut on_progress: impl FnMut(f32),
+) -> Result<Option<Vec<i16>>, ConvertError> {
     ff::init()?;
     let mut ictx = ff::format::input(path.as_ref())?;
+
+    // Expected mono-16k sample count, for progress (0 = duration unknown).
+    let expected_samples = if ictx.duration() > 0 {
+        (ictx.duration() as f64 / 1_000_000.0 * AUDIO_RATE as f64).max(1.0) as f32
+    } else {
+        0.0
+    };
 
     let stream = match ictx.streams().best(Type::Audio) {
         Some(s) => s,
@@ -260,6 +284,9 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(path: P) -> Result<Option<Vec<i16>>, Con
         while decoder.receive_frame(&mut decoded).is_ok() {
             graph.get("in").unwrap().source().add(&decoded)?;
             drain_sink(&mut graph, &mut filtered, &mut pcm);
+            if expected_samples > 0.0 {
+                on_progress((pcm.len() as f32 / expected_samples).min(0.999));
+            }
         }
     }
 
@@ -272,6 +299,7 @@ pub fn decode_audio_pcm<P: AsRef<Path>>(path: P) -> Result<Option<Vec<i16>>, Con
     graph.get("in").unwrap().source().flush()?;
     drain_sink(&mut graph, &mut filtered, &mut pcm);
 
+    on_progress(1.0);
     Ok(Some(pcm))
 }
 
@@ -315,11 +343,26 @@ pub fn convert_to<P: AsRef<Path>>(
     mut progress: impl FnMut(f32),
 ) -> Result<(), ConvertError> {
     let input = input.as_ref();
-    progress(0.05);
-    let frames = decode_video_frames(input)?; // heavy
-    progress(0.7);
-    let audio = decode_audio_pcm(input)?; // heavy
-    progress(0.9);
+    progress(0.0);
+    // Video decode is the bulk of the work (~0..0.9 of the bar); audio (~0.9..0.98)
+    // and packing/writing (the final jump to 1.0) are comparatively quick. Throttle
+    // forwarding to ~1% steps so a long video doesn't flood the UI channel.
+    let mut vlast = -1.0f32;
+    let frames = decode_video_frames(input, |p| {
+        let v = p * 0.9;
+        if v - vlast >= 0.01 || p >= 1.0 {
+            vlast = v;
+            progress(v);
+        }
+    })?;
+    let mut alast = -1.0f32;
+    let audio = decode_audio_pcm(input, |p| {
+        let v = 0.9 + p * 0.08;
+        if v - alast >= 0.01 || p >= 1.0 {
+            alast = v;
+            progress(v);
+        }
+    })?;
 
     let params = PackParams {
         width: WIDTH as u16,

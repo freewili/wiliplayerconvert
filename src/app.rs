@@ -310,9 +310,11 @@ impl App {
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(280.0).at_least(120.0).clip(true)) // File
-            .column(Column::initial(90.0).at_least(60.0)) // Status
-            .column(Column::remainder().at_least(120.0)) // Progress
+            // File absorbs the slack (and clips long names); Status and Progress
+            // are fixed widths so the progress bar is always fully on screen.
+            .column(Column::remainder().at_least(120.0).clip(true)) // File
+            .column(Column::initial(80.0).at_least(60.0).clip(true)) // Status
+            .column(Column::initial(160.0).at_least(120.0).clip(true)) // Progress
             .auto_shrink([false, false])
             .header(20.0, |mut header| {
                 header.col(|ui| {
@@ -429,7 +431,11 @@ impl eframe::App for App {
                 ui.label("Destination:");
                 match &self.dest {
                     Some(d) => {
-                        ui.monospace(d.display().to_string());
+                        let full = d.display().to_string();
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&full).monospace()).truncate(),
+                        )
+                        .on_hover_text(full);
                     }
                     None => {
                         ui.weak("(none chosen)");

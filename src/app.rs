@@ -61,6 +61,20 @@ impl Default for App {
 }
 
 impl App {
+    /// Build with paths pre-queued (from command-line args / drag-onto-icon).
+    pub fn with_initial_files(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut app = Self::default();
+        for p in paths {
+            if !app.items.iter().any(|i| i.path == p) {
+                app.items.push(Item {
+                    path: p,
+                    status: Status::Queued,
+                });
+            }
+        }
+        app
+    }
+
     fn add_files(&mut self) {
         if let Some(paths) = rfd::FileDialog::new()
             .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v"])
@@ -223,20 +237,70 @@ impl eframe::App for App {
                         .text(format!("{done}/{total} files")),
                 );
             }
-            egui::ScrollArea::vertical()
-                .max_height(260.0)
-                .show(ui, |ui| {
-                    for it in &self.items {
-                        let name = it.path.file_name().unwrap().to_string_lossy();
-                        let s = match &it.status {
-                            Status::Queued => "queued".to_string(),
-                            Status::Converting(f) => format!("converting… {:.0}%", f * 100.0),
-                            Status::Done(_) => "done".to_string(),
-                            Status::Failed(e) => format!("failed: {e}"),
-                        };
-                        ui.label(format!("{name}  —  {s}"));
-                    }
-                });
+            if self.items.is_empty() {
+                ui.weak("No files added yet — click \u{201c}Add files\u{2026}\u{201d}.");
+            } else {
+                let row_h = ui.spacing().interact_size.y;
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("queue")
+                            .striped(true)
+                            .num_columns(3)
+                            .spacing([18.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.strong("File");
+                                ui.strong("Status");
+                                ui.strong("Progress");
+                                ui.end_row();
+
+                                for it in &self.items {
+                                    let name = it.path.file_name().unwrap().to_string_lossy();
+                                    ui.add_sized(
+                                        [240.0, row_h],
+                                        egui::Label::new(name.as_ref()).truncate(),
+                                    )
+                                    .on_hover_text(it.path.display().to_string());
+
+                                    let frac = match &it.status {
+                                        Status::Queued => 0.0,
+                                        Status::Converting(f) => *f,
+                                        Status::Done(_) => 1.0,
+                                        Status::Failed(_) => 0.0,
+                                    };
+                                    match &it.status {
+                                        Status::Queued => {
+                                            ui.weak("queued");
+                                        }
+                                        Status::Converting(_) => {
+                                            ui.label("converting\u{2026}");
+                                        }
+                                        Status::Done(p) => {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(80, 170, 90),
+                                                "done",
+                                            )
+                                            .on_hover_text(p.display().to_string());
+                                        }
+                                        Status::Failed(e) => {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(220, 90, 90),
+                                                "failed",
+                                            )
+                                            .on_hover_text(e.as_str());
+                                        }
+                                    }
+
+                                    ui.add(
+                                        egui::ProgressBar::new(frac)
+                                            .desired_width(150.0)
+                                            .text(format!("{:.0}%", frac * 100.0)),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            }
             ui.separator();
             let can_start = !self.running
                 && self.dest.is_some()

@@ -12,12 +12,12 @@ fn main() -> eframe::Result<()> {
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([620.0, 640.0]),
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([720.0, 600.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "FWMV Video Converter",
+        "FreeWili Player Movie Convertor",
         options,
-        Box::new(move |_cc| Ok(Box::new(app::App::with_initial_files(files)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, files)))),
     )
 }

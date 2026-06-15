@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use fileconvert::convert;
 
 /// Logical CPUs (fallback 4 if unknown).
@@ -36,12 +37,21 @@ fn human_size(bytes: u64) -> String {
 /// Cap on retained console lines, so a long batch can't grow memory unbounded.
 const MAX_LOG_LINES: usize = 1000;
 
+const KEY_DEST: &str = "dest";
+const KEY_CONCURRENCY: &str = "concurrency";
+
 #[derive(Clone, PartialEq)]
 enum Status {
     Queued,
     Converting(f32),
     Done(PathBuf),
     Failed(String),
+}
+
+impl Status {
+    fn is_finished(&self) -> bool {
+        matches!(self, Status::Done(_) | Status::Failed(_))
+    }
 }
 
 struct Item {
@@ -57,6 +67,12 @@ enum Msg {
     Batch,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Queue,
+    Console,
+}
+
 pub struct App {
     items: Vec<Item>,
     dest: Option<PathBuf>,
@@ -64,26 +80,40 @@ pub struct App {
     running: bool,
     concurrency: usize,
     log: Vec<String>,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            dest: None,
-            rx: None,
-            running: false,
-            concurrency: default_concurrency(),
-            log: Vec::new(),
-        }
-    }
+    tab: Tab,
 }
 
 impl App {
-    /// Build with paths pre-queued (from command-line args / drag-onto-icon).
-    pub fn with_initial_files(paths: impl IntoIterator<Item = PathBuf>) -> Self {
-        let mut app = Self::default();
-        for p in paths {
+    /// Build the app: apply the light theme, restore remembered settings
+    /// (destination + concurrency) from storage, and pre-queue any path args.
+    pub fn new(cc: &eframe::CreationContext<'_>, files: impl IntoIterator<Item = PathBuf>) -> Self {
+        cc.egui_ctx.set_visuals(egui::Visuals::light());
+
+        let mut dest = None;
+        let mut concurrency = default_concurrency();
+        if let Some(storage) = cc.storage {
+            if let Some(d) = storage.get_string(KEY_DEST) {
+                if !d.is_empty() && std::path::Path::new(&d).is_dir() {
+                    dest = Some(PathBuf::from(d));
+                }
+            }
+            if let Some(c) = storage.get_string(KEY_CONCURRENCY) {
+                if let Ok(n) = c.parse::<usize>() {
+                    concurrency = n.clamp(1, cpu_count());
+                }
+            }
+        }
+
+        let mut app = Self {
+            items: Vec::new(),
+            dest,
+            rx: None,
+            running: false,
+            concurrency,
+            log: Vec::new(),
+            tab: Tab::Queue,
+        };
+        for p in files {
             if !app.items.iter().any(|i| i.path == p) {
                 app.items.push(Item {
                     path: p,
@@ -132,6 +162,19 @@ impl App {
             self.log(format!("Destination: {}", d.display()));
             self.dest = Some(d);
         }
+    }
+
+    /// Remove already-converted (done/failed) rows from the queue.
+    fn clear_finished(&mut self) {
+        self.items.retain(|i| !i.status.is_finished());
+    }
+
+    fn has_finished(&self) -> bool {
+        self.items.iter().any(|i| i.status.is_finished())
+    }
+
+    fn has_pending(&self) -> bool {
+        self.items.iter().any(|i| !matches!(i.status, Status::Done(_)))
     }
 
     fn start(&mut self, ctx: egui::Context) {
@@ -254,13 +297,112 @@ impl App {
             self.rx = None;
         }
     }
+
+    /// The resizable queue table, filling the available space.
+    fn queue_table(&self, ui: &mut egui::Ui) {
+        if self.items.is_empty() {
+            ui.weak("No files added yet — click \u{201c}Add files\u{2026}\u{201d}.");
+            return;
+        }
+        let green = egui::Color32::from_rgb(30, 140, 60);
+        let red = egui::Color32::from_rgb(180, 40, 40);
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::initial(280.0).at_least(120.0).clip(true)) // File
+            .column(Column::initial(90.0).at_least(60.0)) // Status
+            .column(Column::remainder().at_least(120.0)) // Progress
+            .auto_shrink([false, false])
+            .header(20.0, |mut header| {
+                header.col(|ui| {
+                    ui.strong("File");
+                });
+                header.col(|ui| {
+                    ui.strong("Status");
+                });
+                header.col(|ui| {
+                    ui.strong("Progress");
+                });
+            })
+            .body(|mut body| {
+                for it in &self.items {
+                    body.row(22.0, |mut row| {
+                        row.col(|ui| {
+                            let name = it.path.file_name().unwrap().to_string_lossy();
+                            ui.add(egui::Label::new(name.as_ref()).truncate())
+                                .on_hover_text(it.path.display().to_string());
+                        });
+                        row.col(|ui| match &it.status {
+                            Status::Queued => {
+                                ui.weak("queued");
+                            }
+                            Status::Converting(_) => {
+                                ui.label("converting\u{2026}");
+                            }
+                            Status::Done(p) => {
+                                ui.colored_label(green, "done")
+                                    .on_hover_text(p.display().to_string());
+                            }
+                            Status::Failed(e) => {
+                                ui.colored_label(red, "failed").on_hover_text(e.as_str());
+                            }
+                        });
+                        row.col(|ui| {
+                            let frac = match &it.status {
+                                Status::Queued => 0.0,
+                                Status::Converting(f) => *f,
+                                Status::Done(_) => 1.0,
+                                Status::Failed(_) => 0.0,
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(frac)
+                                    .text(format!("{:.0}%", frac * 100.0)),
+                            );
+                        });
+                    });
+                }
+            });
+    }
+
+    /// The console/log view, filling the available space.
+    fn console_view(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.log.is_empty(), egui::Button::new("Clear"))
+                .clicked()
+            {
+                self.log.clear();
+            }
+        });
+        egui::ScrollArea::vertical()
+            .id_salt("console")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if self.log.is_empty() {
+                    ui.weak("(idle)");
+                } else {
+                    for line in &self.log {
+                        ui.label(egui::RichText::new(line).monospace().small());
+                    }
+                }
+            });
+    }
 }
 
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(d) = &self.dest {
+            storage.set_string(KEY_DEST, d.to_string_lossy().to_string());
+        }
+        storage.set_string(KEY_CONCURRENCY, self.concurrency.to_string());
+    }
+
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.drain();
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("FWMV Video Converter");
+            // Top action row: Add files, Choose destination, Convert.
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(!self.running, egui::Button::new("Add files…"))
@@ -274,11 +416,27 @@ impl eframe::App for App {
                 {
                     self.choose_dest();
                 }
+                let can_start = !self.running && self.dest.is_some() && self.has_pending();
+                if ui
+                    .add_enabled(can_start, egui::Button::new("Convert"))
+                    .clicked()
+                {
+                    self.start(ctx.clone());
+                }
             });
-            ui.label(match &self.dest {
-                Some(d) => format!("Destination: {}", d.display()),
-                None => "Destination: (none chosen)".into(),
+
+            ui.horizontal(|ui| {
+                ui.label("Destination:");
+                match &self.dest {
+                    Some(d) => {
+                        ui.monospace(d.display().to_string());
+                    }
+                    None => {
+                        ui.weak("(none chosen)");
+                    }
+                }
             });
+
             ui.horizontal(|ui| {
                 ui.label("Simultaneous conversions:");
                 ui.add_enabled(
@@ -290,8 +448,18 @@ impl eframe::App for App {
                      more RAM (each file is fully buffered in memory) and, past a \
                      point, CPU oversubscription vs FFmpeg's own decode threads.",
                 );
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        !self.running && self.has_finished(),
+                        egui::Button::new("Clear finished"),
+                    )
+                    .clicked()
+                {
+                    self.clear_finished();
+                }
             });
-            ui.separator();
+
             let total = self.items.len();
             let done = self
                 .items
@@ -304,108 +472,19 @@ impl eframe::App for App {
                         .text(format!("{done}/{total} files")),
                 );
             }
-            if self.items.is_empty() {
-                ui.weak("No files added yet — click \u{201c}Add files\u{2026}\u{201d}.");
-            } else {
-                let row_h = ui.spacing().interact_size.y;
-                egui::ScrollArea::vertical()
-                    .max_height(280.0)
-                    .show(ui, |ui| {
-                        egui::Grid::new("queue")
-                            .striped(true)
-                            .num_columns(3)
-                            .spacing([18.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.strong("File");
-                                ui.strong("Status");
-                                ui.strong("Progress");
-                                ui.end_row();
-
-                                for it in &self.items {
-                                    let name = it.path.file_name().unwrap().to_string_lossy();
-                                    ui.add_sized(
-                                        [240.0, row_h],
-                                        egui::Label::new(name.as_ref()).truncate(),
-                                    )
-                                    .on_hover_text(it.path.display().to_string());
-
-                                    let frac = match &it.status {
-                                        Status::Queued => 0.0,
-                                        Status::Converting(f) => *f,
-                                        Status::Done(_) => 1.0,
-                                        Status::Failed(_) => 0.0,
-                                    };
-                                    match &it.status {
-                                        Status::Queued => {
-                                            ui.weak("queued");
-                                        }
-                                        Status::Converting(_) => {
-                                            ui.label("converting\u{2026}");
-                                        }
-                                        Status::Done(p) => {
-                                            ui.colored_label(
-                                                egui::Color32::from_rgb(80, 170, 90),
-                                                "done",
-                                            )
-                                            .on_hover_text(p.display().to_string());
-                                        }
-                                        Status::Failed(e) => {
-                                            ui.colored_label(
-                                                egui::Color32::from_rgb(220, 90, 90),
-                                                "failed",
-                                            )
-                                            .on_hover_text(e.as_str());
-                                        }
-                                    }
-
-                                    ui.add(
-                                        egui::ProgressBar::new(frac)
-                                            .desired_width(150.0)
-                                            .text(format!("{:.0}%", frac * 100.0)),
-                                    );
-                                    ui.end_row();
-                                }
-                            });
-                    });
-            }
-            ui.separator();
-            let can_start = !self.running
-                && self.dest.is_some()
-                && self
-                    .items
-                    .iter()
-                    .any(|i| !matches!(i.status, Status::Done(_)));
-            if ui
-                .add_enabled(can_start, egui::Button::new("Convert"))
-                .clicked()
-            {
-                self.start(ctx.clone());
-            }
 
             ui.separator();
             ui.horizontal(|ui| {
-                ui.strong("Console");
-                if ui
-                    .add_enabled(!self.log.is_empty(), egui::Button::new("Clear"))
-                    .clicked()
-                {
-                    self.log.clear();
-                }
+                ui.selectable_value(&mut self.tab, Tab::Queue, "Queue");
+                ui.selectable_value(&mut self.tab, Tab::Console, "Console");
             });
-            egui::ScrollArea::vertical()
-                .id_salt("console")
-                .max_height(150.0)
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    if self.log.is_empty() {
-                        ui.weak("(idle)");
-                    } else {
-                        for line in &self.log {
-                            ui.label(egui::RichText::new(line).monospace().small());
-                        }
-                    }
-                });
+            ui.separator();
+
+            // The selected tab fills the entire remaining bottom area.
+            match self.tab {
+                Tab::Queue => self.queue_table(ui),
+                Tab::Console => self.console_view(ui),
+            }
         });
     }
 }

@@ -20,6 +20,22 @@ fn default_concurrency() -> usize {
     (cpu_count() / 4).clamp(2, 8)
 }
 
+/// Human-readable byte size for the console log.
+fn human_size(bytes: u64) -> String {
+    const MB: u64 = 1 << 20;
+    const KB: u64 = 1 << 10;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Cap on retained console lines, so a long batch can't grow memory unbounded.
+const MAX_LOG_LINES: usize = 1000;
+
 #[derive(Clone, PartialEq)]
 enum Status {
     Queued,
@@ -37,6 +53,7 @@ enum Msg {
     Progress(usize, f32),
     Done(usize, PathBuf),
     Failed(usize, String),
+    Log(String),
     Batch,
 }
 
@@ -46,6 +63,7 @@ pub struct App {
     rx: Option<Receiver<Msg>>,
     running: bool,
     concurrency: usize,
+    log: Vec<String>,
 }
 
 impl Default for App {
@@ -56,6 +74,7 @@ impl Default for App {
             rx: None,
             running: false,
             concurrency: default_concurrency(),
+            log: Vec::new(),
         }
     }
 }
@@ -72,7 +91,19 @@ impl App {
                 });
             }
         }
+        if !app.items.is_empty() {
+            app.log(format!("Queued {} file(s) from arguments.", app.items.len()));
+        }
         app
+    }
+
+    /// Append a line to the in-app console, trimming to the retention cap.
+    fn log(&mut self, msg: impl Into<String>) {
+        self.log.push(msg.into());
+        if self.log.len() > MAX_LOG_LINES {
+            let drop = self.log.len() - MAX_LOG_LINES;
+            self.log.drain(0..drop);
+        }
     }
 
     fn add_files(&mut self) {
@@ -80,19 +111,25 @@ impl App {
             .add_filter("Video", &["mp4", "mkv", "mov", "avi", "webm", "m4v"])
             .pick_files()
         {
+            let mut added = 0;
             for p in paths {
                 if !self.items.iter().any(|i| i.path == p) {
                     self.items.push(Item {
                         path: p,
                         status: Status::Queued,
                     });
+                    added += 1;
                 }
+            }
+            if added > 0 {
+                self.log(format!("Added {added} file(s)."));
             }
         }
     }
 
     fn choose_dest(&mut self) {
         if let Some(d) = rfd::FileDialog::new().pick_folder() {
+            self.log(format!("Destination: {}", d.display()));
             self.dest = Some(d);
         }
     }
@@ -129,6 +166,11 @@ impl App {
         }
 
         let n_workers = self.concurrency.clamp(1, jobs.len());
+        self.log(format!(
+            "Starting {} file(s), up to {} at a time.",
+            jobs.len(),
+            n_workers
+        ));
         let queue: Arc<Mutex<VecDeque<(usize, PathBuf, PathBuf)>>> =
             Arc::new(Mutex::new(jobs.into_iter().collect()));
 
@@ -145,6 +187,11 @@ impl App {
                     let Some((idx, input, out)) = job else {
                         break;
                     };
+                    let name = input
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let _ = tx.send(Msg::Log(format!("{name}: converting...")));
                     let txp = tx.clone();
                     let ctxp = ctx.clone();
                     let r = convert::convert_to(&input, &out, |f| {
@@ -153,9 +200,19 @@ impl App {
                     });
                     match r {
                         Ok(()) => {
+                            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                            let outname = out
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let _ = tx.send(Msg::Log(format!(
+                                "{name}: done -> {outname} ({})",
+                                human_size(size)
+                            )));
                             let _ = tx.send(Msg::Done(idx, out));
                         }
                         Err(e) => {
+                            let _ = tx.send(Msg::Log(format!("{name}: FAILED - {e}")));
                             let _ = tx.send(Msg::Failed(idx, format!("{e}")));
                         }
                     }
@@ -165,6 +222,7 @@ impl App {
             for h in handles {
                 let _ = h.join();
             }
+            let _ = tx.send(Msg::Log("Batch complete.".to_string()));
             let _ = tx.send(Msg::Batch);
             ctx.request_repaint();
         });
@@ -172,15 +230,20 @@ impl App {
 
     fn drain(&mut self) {
         let mut done = false;
+        let mut logged: Vec<String> = Vec::new();
         if let Some(rx) = &self.rx {
             while let Ok(m) = rx.try_recv() {
                 match m {
                     Msg::Progress(i, f) => self.items[i].status = Status::Converting(f),
                     Msg::Done(i, p) => self.items[i].status = Status::Done(p),
                     Msg::Failed(i, e) => self.items[i].status = Status::Failed(e),
+                    Msg::Log(line) => logged.push(line),
                     Msg::Batch => done = true,
                 }
             }
+        }
+        for line in logged {
+            self.log(line);
         }
         if done {
             self.running = false;
@@ -314,6 +377,31 @@ impl eframe::App for App {
             {
                 self.start(ctx.clone());
             }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.strong("Console");
+                if ui
+                    .add_enabled(!self.log.is_empty(), egui::Button::new("Clear"))
+                    .clicked()
+                {
+                    self.log.clear();
+                }
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("console")
+                .max_height(150.0)
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    if self.log.is_empty() {
+                        ui.weak("(idle)");
+                    } else {
+                        for line in &self.log {
+                            ui.label(egui::RichText::new(line).monospace().small());
+                        }
+                    }
+                });
         });
     }
 }

@@ -15,10 +15,10 @@ path = "src/main.rs"
 # ffmpeg-the-third (v5) supports the installed FFmpeg 8.1; aliased to the
 # `ffmpeg_next` import name so the pipeline code reads against a stable name.
 ffmpeg-next = { package = "ffmpeg-the-third", version = "5.0" }
-# TODO(Task 10): GUI deps
-# eframe = "0.29"
-# egui = "0.29"
-# rfd = "0.15"
+# GUI deps (Task 10). eframe re-exports egui (import as `eframe::egui`), so we do
+# not depend on a separate `egui` crate to avoid a version mismatch.
+eframe = "0.29"
+rfd = "0.15"
 
 [profile.release]
 lto = true

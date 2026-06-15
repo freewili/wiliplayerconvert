@@ -166,10 +166,14 @@ impl App {
         }
 
         let n_workers = self.concurrency.clamp(1, jobs.len());
+        // Split the CPU across the pool: each file decodes with this many threads
+        // so workers * threads ~= cores (no oversubscription, no idle cores).
+        let decode_threads = (cpu_count() / n_workers).max(1);
         self.log(format!(
-            "Starting {} file(s), up to {} at a time.",
+            "Starting {} file(s), up to {} at a time ({} decode thread(s) each).",
             jobs.len(),
-            n_workers
+            n_workers,
+            decode_threads
         ));
         let queue: Arc<Mutex<VecDeque<(usize, PathBuf, PathBuf)>>> =
             Arc::new(Mutex::new(jobs.into_iter().collect()));
@@ -194,7 +198,7 @@ impl App {
                     let _ = tx.send(Msg::Log(format!("{name}: converting...")));
                     let txp = tx.clone();
                     let ctxp = ctx.clone();
-                    let r = convert::convert_to(&input, &out, |f| {
+                    let r = convert::convert_to(&input, &out, decode_threads, |f| {
                         let _ = txp.send(Msg::Progress(idx, f));
                         ctxp.request_repaint();
                     });

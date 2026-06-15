@@ -90,41 +90,46 @@ fn video_filter(
     Ok(g)
 }
 
-fn encode_jpeg(frame: &Video) -> Result<Vec<u8>, ff::Error> {
+/// Open one MJPEG encoder for the whole video (480x270 yuvj420p, fixed qscale).
+/// Reused across every frame — recreating it per frame was a large overhead.
+fn open_mjpeg_encoder() -> Result<ff::encoder::video::Encoder, ff::Error> {
     let codec = ff::encoder::find(ff::codec::Id::MJPEG).ok_or(ff::Error::EncoderNotFound)?;
     let ctx = ff::codec::context::Context::new_with_codec(codec);
     let mut enc = ctx.encoder().video()?;
-    enc.set_width(frame.width());
-    enc.set_height(frame.height());
+    enc.set_width(WIDTH);
+    enc.set_height(HEIGHT);
     enc.set_format(Pixel::YUVJ420P);
     enc.set_time_base((1, FPS as i32));
-
-    // `-q:v 10` => fixed qscale. Set the QSCALE flag + global_quality, and the
-    // per-frame quality, matching ffmpeg's qscale path.
+    // `-q:v 10` => fixed qscale: QSCALE flag + global_quality (per-frame quality
+    // is also set on each frame below).
     enc.set_flags(ff::codec::flag::Flags::QSCALE);
     enc.set_global_quality(JPEG_QSCALE * FF_QP2LAMBDA);
+    enc.open()
+}
 
-    let mut opened = enc.open()?;
-
-    let mut f = frame.clone();
+/// Feed one filtered frame to the persistent encoder and collect the JPEG(s)
+/// it emits (MJPEG is intra-only: one complete JPEG per frame).
+fn encode_into(
+    encoder: &mut ff::encoder::video::Encoder,
+    frame: &mut Video,
+    frames: &mut Vec<Vec<u8>>,
+) -> Result<(), ConvertError> {
     unsafe {
-        (*f.as_mut_ptr()).quality = JPEG_QSCALE * FF_QP2LAMBDA;
+        (*frame.as_mut_ptr()).quality = JPEG_QSCALE * FF_QP2LAMBDA;
     }
-    opened.send_frame(&f)?;
-    opened.send_eof()?;
-
+    encoder.send_frame(frame)?;
     let mut packet = ff::Packet::empty();
-    let mut out = Vec::new();
-    while opened.receive_packet(&mut packet).is_ok() {
+    while encoder.receive_packet(&mut packet).is_ok() {
         if let Some(data) = packet.data() {
-            out.extend_from_slice(data);
+            frames.push(data.to_vec());
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 pub fn decode_video_frames<P: AsRef<Path>>(
     path: P,
+    threads: usize,
     mut on_progress: impl FnMut(f32),
 ) -> Result<Vec<Vec<u8>>, ConvertError> {
     ff::init()?;
@@ -144,19 +149,31 @@ pub fn decode_video_frames<P: AsRef<Path>>(
     let stream_index = stream.index();
     let time_base = stream.time_base();
 
-    let ctx = ff::codec::context::Context::from_parameters(stream.parameters())?;
+    let mut ctx = ff::codec::context::Context::from_parameters(stream.parameters())?;
+    // Multithreaded (frame-parallel) decode — the source decode dominates the
+    // cost. `threads` is the per-file budget (the GUI splits cores across the
+    // worker pool); 0 = let FFmpeg auto-detect.
+    if threads != 1 {
+        ctx.set_threading(ff::codec::threading::Config {
+            kind: ff::codec::threading::Type::Frame,
+            count: threads,
+        });
+    }
     let mut decoder = ctx.decoder().video()?;
     let mut graph = video_filter(&decoder, time_base)?;
+    let mut encoder = open_mjpeg_encoder()?;
 
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut decoded = Video::empty();
     let mut filtered = Video::empty();
 
-    // Pull all available frames out of the filtergraph sink and JPEG-encode them.
+    // Pull all available frames out of the filtergraph sink and JPEG-encode them
+    // with the persistent encoder.
     fn drain_sink(
         graph: &mut ff::filter::Graph,
         filtered: &mut Video,
         frames: &mut Vec<Vec<u8>>,
+        encoder: &mut ff::encoder::video::Encoder,
     ) -> Result<(), ConvertError> {
         while graph
             .get("out")
@@ -165,7 +182,7 @@ pub fn decode_video_frames<P: AsRef<Path>>(
             .frame(filtered)
             .is_ok()
         {
-            frames.push(encode_jpeg(filtered)?);
+            encode_into(encoder, filtered, frames)?;
         }
         Ok(())
     }
@@ -182,7 +199,7 @@ pub fn decode_video_frames<P: AsRef<Path>>(
             let ts = decoded.timestamp();
             decoded.set_pts(ts);
             graph.get("in").unwrap().source().add(&decoded)?;
-            drain_sink(&mut graph, &mut filtered, &mut frames)?;
+            drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
             if expected_frames > 0.0 {
                 on_progress((frames.len() as f32 / expected_frames).min(0.999));
             }
@@ -194,11 +211,20 @@ pub fn decode_video_frames<P: AsRef<Path>>(
         let ts = decoded.timestamp();
         decoded.set_pts(ts);
         graph.get("in").unwrap().source().add(&decoded)?;
-        drain_sink(&mut graph, &mut filtered, &mut frames)?;
+        drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
     }
 
     graph.get("in").unwrap().source().flush()?;
-    drain_sink(&mut graph, &mut filtered, &mut frames)?;
+    drain_sink(&mut graph, &mut filtered, &mut frames, &mut encoder)?;
+
+    // Flush the encoder for any frame it was still holding.
+    encoder.send_eof()?;
+    let mut packet = ff::Packet::empty();
+    while encoder.receive_packet(&mut packet).is_ok() {
+        if let Some(data) = packet.data() {
+            frames.push(data.to_vec());
+        }
+    }
 
     if frames.is_empty() {
         return Err(ConvertError::Empty);
@@ -340,6 +366,7 @@ pub fn output_path(
 pub fn convert_to<P: AsRef<Path>>(
     input: P,
     out_path: &Path,
+    decode_threads: usize,
     mut progress: impl FnMut(f32),
 ) -> Result<(), ConvertError> {
     let input = input.as_ref();
@@ -348,7 +375,7 @@ pub fn convert_to<P: AsRef<Path>>(
     // and packing/writing (the final jump to 1.0) are comparatively quick. Throttle
     // forwarding to ~1% steps so a long video doesn't flood the UI channel.
     let mut vlast = -1.0f32;
-    let frames = decode_video_frames(input, |p| {
+    let frames = decode_video_frames(input, decode_threads, |p| {
         let v = p * 0.9;
         if v - vlast >= 0.01 || p >= 1.0 {
             vlast = v;
@@ -387,6 +414,10 @@ pub fn convert_file<P: AsRef<Path>>(
 ) -> Result<PathBuf, ConvertError> {
     let input = input.as_ref();
     let out = output_path(dest_dir, input, &std::collections::HashSet::new());
-    convert_to(input, &out, progress)?;
+    // Sequential convenience path: let one file use all cores.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    convert_to(input, &out, threads, progress)?;
     Ok(out)
 }

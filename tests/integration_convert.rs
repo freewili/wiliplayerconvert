@@ -8,7 +8,7 @@ fn ffmpeg_initializes() {
 
 #[test]
 fn decodes_letterboxed_jpeg_frames() {
-    let frames = convert::decode_video_frames("tests/fixtures/sample.mp4", |_| {}).unwrap();
+    let frames = convert::decode_video_frames("tests/fixtures/sample.mp4", 0, |_| {}).unwrap();
     // 2 s at 15 fps target -> ~30 frames.
     assert!(
         frames.len() >= 25 && frames.len() <= 35,

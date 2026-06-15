@@ -20,7 +20,17 @@ pub fn record_padding(size: usize) -> usize {
     (4 - size % 4) % 4
 }
 
+/// Max record payload the player accepts; a larger `size` field makes the
+/// player treat the stream as corrupt. Guaranteed not to be hit at the fixed
+/// 480x270 / quality-10 encode settings, but assert it to pin the invariant.
+pub const MAX_RECORD_PAYLOAD: usize = 65536;
+
 pub fn pack_record(rtype: u16, payload: &[u8]) -> Vec<u8> {
+    debug_assert!(
+        payload.len() <= MAX_RECORD_PAYLOAD,
+        "record payload {} exceeds player limit {MAX_RECORD_PAYLOAD}",
+        payload.len()
+    );
     let mut out = Vec::with_capacity(RECORD_HDR_SIZE + payload.len() + 3);
     out.extend_from_slice(&rtype.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());          // reserved

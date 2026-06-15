@@ -1,9 +1,11 @@
 # fileconvert
 
 A small desktop app that converts ordinary videos (MP4, MKV, MOV, …) into
-`.fwmv` files for the **FreeWili movie player**. Runs on Windows, Linux, and
-macOS as a single self-contained binary — FFmpeg is statically linked, so there
-is nothing else to install.
+`.fwmv` files for the **FreeWili movie player**. It builds as a single
+self-contained binary — FFmpeg is statically linked, so there is nothing else to
+install. The code is cross-platform (Windows/Linux/macOS); so far it has been
+built and validated on **Windows**, with Linux/macOS wired in CI (see
+[`build/README.md`](build/README.md)).
 
 ## What it does
 

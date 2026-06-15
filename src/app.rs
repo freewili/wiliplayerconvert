@@ -101,7 +101,7 @@ impl App {
                         let _ = tx.send(Msg::Done(idx, out));
                     }
                     Err(e) => {
-                        let _ = tx.send(Msg::Failed(idx, format!("{e:?}")));
+                        let _ = tx.send(Msg::Failed(idx, format!("{e}")));
                     }
                 }
                 ctx.request_repaint();
